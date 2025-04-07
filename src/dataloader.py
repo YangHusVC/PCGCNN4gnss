@@ -12,6 +12,7 @@ from numpy.random import default_rng
 
 from gnss_lib.utils import datetime_to_tow
 import gnss_lib.coordinates as coord
+from gnss_lib.solve_pos import solve_pos, solve_vel
 pd.options.mode.chained_assignment = None  # default='warn'
 
 class Android_GNSS_Dataset(Dataset):
@@ -138,7 +139,7 @@ class Android_GNSS_Dataset(Dataset):
         return true_XYZb + guess_noise
     
     
-    def __getitem__(self, idx, guess_XYZb=None):
+    def __getitem__(self, idx, guess_XYZb=None,guess_vXYZb=None,data_freq=1):
         key, timestep = self.indices[idx]
         key_file, times = self.get_files(key)
         data = key_file[key_file['millisSinceGpsEpoch']==times[timestep]]
@@ -146,6 +147,7 @@ class Android_GNSS_Dataset(Dataset):
 
         # Select random initialization
         true_XYZb = np.array([_data0['ecefX'], _data0['ecefY'], _data0['ecefZ'], _data0['b']])
+        '''
         if guess_XYZb is None:
             guess_XYZb = self.add_guess_noise(true_XYZb)    # Generate guess by adding noise to groundtruth
 #         guess_XYZb = np.copy(true_XYZb)         # 0 noise for debugging 
@@ -155,7 +157,18 @@ class Android_GNSS_Dataset(Dataset):
         guess_NEDb = np.copy(guess_XYZb)
         guess_NEDb[:3] = ref_local.ecef2ned(guess_XYZb[:3, None])[:, 0]   # position
 #         guess_NEDb[4:7] = ref_local.ecef2nedv(guess_XYZb[4:7, None])[:, 0]    # velocity
+        '''
+        #wls result as guessed
+        if guess_XYZb is None:
+            guess_XYZb=solve_pos(data.loc[:,'PrM'].to_numpy,data.loc[:, "xSatPosM"].to_numpy(),data.loc[:, "ySatPosM"].to_numpy(),data.loc[:, "xSatPosM"].to_numpy(),np.zeros_like(data.loc[:, 'PrM'].to_numpy()))
+        guess_XYZb = np.copy(true_XYZb)         # 0 noise for debugging 
         
+        # Transform to NED frame
+        ref_local = coord.LocalCoord.from_ecef(guess_XYZb[:3])
+        guess_NEDb = np.copy(guess_XYZb)
+        guess_NEDb[:3] = ref_local.ecef2ned(guess_XYZb[:3, None])[:, 0]   # position
+#         guess_NEDb[4:7] = ref_local.ecef2nedv(guess_XYZb[4:7, None])[:, 0]    # velocity
+
         true_NEDb = np.copy(true_XYZb)
         true_NEDb[:3] = ref_local.ecef2ned(true_XYZb[:3, None])[:, 0]   # position
         
@@ -170,14 +183,25 @@ class Android_GNSS_Dataset(Dataset):
                 residuals[idx] = residuals[idx] - bias_slice.loc[bias_slice['SvName']==svid, 'bias'].to_numpy()[0]
         los_vector = (satXYZV[['x', 'y', 'z']] - guess_XYZb[:3])
         los_vector = los_vector.div(np.sqrt(np.square(los_vector).sum(axis=1)), axis='rows').to_numpy()
+        los_vector_cached = los_vector.copy()
         los_vector = ref_local.ecef2nedv(los_vector)
+
+        if guess_vXYZb is None:
+            guess_vXYZb=solve_vel(data['CarrierFrequencyHz'],data['signalType'],data['svid'],los_vector_cached,satXYZV['vx'],satXYZV['vy'],satXYZV['vz'])
+        guess_vXYZb = zeros_array = np.zeros_like(true_XYZb)        # 0 noise for debugging 
+
+        guess_pXYZb=guess_XYZb+data_freq*guess_vXYZb#=f(guess_vXYZb)
+        guess_pNEDb=ref_local.ecef2nedv(guess_pXYZb)
+
+        error_estimation=estimated_error(data['ElevationDegrees'],data['Cn0DbHz'])
         
-        features = np.concatenate((np.reshape(residuals, [-1, 1]), los_vector), axis=1)
+        features = np.concatenate((np.reshape(residuals, [-1, 1]), los_vector, error_estimation), axis=1)
         
         sample = {
             'features': torch.Tensor(features),
             'true_correction': (true_NEDb-guess_NEDb)[:3],
-            'guess': guess_XYZb
+            'guess': guess_XYZb,
+            'next': guess_pNEDb
         }
 
         if self.transform is not None:
@@ -208,6 +232,17 @@ class Android_GNSS_Dataset(Dataset):
             if name.endswith("_derived.csv"):
                 og_name = name
         data = pd.read_csv(os.path.join(self.in_root, _path, og_name))
+        for name in names:
+            if name.endswith("_derived.csv"):
+                log_name = name
+        data_log=pd.read_csv(os.path.join(self.in_root, _path, log_name))
+
+        '''data = data.merge(
+            data_log[['millisSinceGpsEpoch','constellationType', 'Svid', 'Cn0DbHz', 'CarrierFrequencyHz', 'ElevationDegrees']], 
+            on=['millisSinceGpsEpoch','constellationType', 'Svid'], 
+            how='left'
+        ) #运算量需要优化WWWWWW'''
+
         data["PrM"] = data["rawPrM"] \
                         + data["satClkBiasM"] \
                         - data["isrbM"] \
@@ -226,7 +261,7 @@ class Android_GNSS_Dataset(Dataset):
         from_t_to_fix_derived = dict(zip(derived_timestamps, gt_timestamps[indexes-1]))
         data['millisSinceGpsEpoch_old'] = data['millisSinceGpsEpoch'].values
         data['millisSinceGpsEpoch'] = np.array(list(map(lambda v: from_t_to_fix_derived[v], data['millisSinceGpsEpoch'])))
-                                          
+                      
         count = 0
         chunk = []
         chunk_num = 0
@@ -234,10 +269,12 @@ class Android_GNSS_Dataset(Dataset):
             # Drop duplicate data if it exists
             dframe.drop_duplicates(inplace=True)
             # Remove all signals except GPS L1
-            dframe_L1 = dframe.drop(index=dframe.loc[dframe["signalType"]!="GPS_L1"].index)
+            '''dframe_L1 = dframe.drop(index=dframe.loc[dframe["signalType"]!="GPS_L1"].index)
             dframe_L1.drop_duplicates(subset=['svid'], inplace=True)
-            dframe_L1.reset_index(drop=True,inplace=True)
+            dframe_L1.reset_index(drop=True,inplace=True)'''
+            dframe_expan=dframe.reset_index(drop=True,inplace=True)
             # Use satellite measurements to obtain receiver clock ground truth estimate
+
             gt_row = gt["millisSinceGpsEpoch"]==idx
             gt_slice = gt.loc[gt_row]            
             
@@ -259,19 +296,27 @@ class Android_GNSS_Dataset(Dataset):
                     gt_slice = high_gt_half.iloc[[0]]
             gt_slice['b'] = solve_gt_b(dframe, gt_slice)
             # Update maximum number of visible sats
-            if len(dframe_L1)>self.max_sats:
-                self.max_sats = len(dframe_L1)
+            if len(dframe_expan)>self.max_sats:
+                self.max_sats = len(dframe_expan)
+
+            #merge information in gnss_log
+            log_row = data_log["millisSinceGpsEpoch"]==idx
+            dframe_expan = data.merge(
+                log_row[['millisSinceGpsEpoch','constellationType', 'Svid', 'Cn0DbHz', 'CarrierFrequencyHz', 'ElevationDegrees']], 
+                on=['millisSinceGpsEpoch','constellationType', 'Svid'], 
+                how='left')
+
             # Add ground truth to the measurement data frame
-            shaped_ones = np.ones(len(dframe_L1))
+            shaped_ones = np.ones(len(dframe_expan))
             # .to_numpy() required because gt_slice is always a DataFrame (ensures receiver bias value is always a scalar)
-            dframe_L1.loc[:, 'ecefX'] = gt_slice['ecefX'].to_numpy()*shaped_ones
-            dframe_L1.loc[:, 'ecefY'] = gt_slice['ecefY'].to_numpy()*shaped_ones
-            dframe_L1.loc[:, 'ecefZ'] = gt_slice['ecefZ'].to_numpy()*shaped_ones
-            dframe_L1.loc[:, 'b'] = gt_slice['b'].to_numpy()*shaped_ones
-            if dframe_L1.isnull().values.any():
-                print(dframe_L1)
+            dframe_expan.loc[:, 'ecefX'] = gt_slice['ecefX'].to_numpy()*shaped_ones
+            dframe_expan.loc[:, 'ecefY'] = gt_slice['ecefY'].to_numpy()*shaped_ones
+            dframe_expan.loc[:, 'ecefZ'] = gt_slice['ecefZ'].to_numpy()*shaped_ones
+            dframe_expan.loc[:, 'b'] = gt_slice['b'].to_numpy()*shaped_ones
+            if dframe_expan.isnull().values.any():
+                print(dframe_expan)
                 raise ValueError('NaNs in DF at one epoch')
-            chunk.append(dframe_L1)
+            chunk.append(dframe_expan)
             count +=1
             # Save newly created chunk
             if count==self.chunk_size:
@@ -351,3 +396,13 @@ def expected_measurements(dframe, guess_XYZb):
     satXYZV['vy'] = satvY
     satXYZV['vz'] = satvZ
     return expected_rho, satXYZV
+
+def estimated_error(eli_angle, cn0,alpha=1):
+    arr1=np.radians(eli_angle.to_numpy())
+    arr2=cn0.to_numpy()
+
+    arr1=1/(np.sin(arr1)**2)
+    arr2=10**(-arr2/10)
+
+    out=arr1*arr2
+    return out

@@ -8,9 +8,11 @@ parent_directory = os.path.split(os.getcwd())[0]
 src_directory = os.path.join(parent_directory, 'src')
 data_directory = os.path.join(parent_directory, 'datasets')
 sys.path.insert(0, src_directory)
+import hydra
+from omegaconf import DictConfig, OmegaConf
+from dataloader import Android_GNSS_Dataset
 
-
-@hydra.main(config_path="../config", config_name="train_android_conf")
+@hydra.main(config_path="../config", config_name="train_gsdc_2021")
 def main(config: DictConfig) -> None:
     data_config = {
     "root": data_directory,
@@ -30,3 +32,5 @@ def main(config: DictConfig) -> None:
     print('Initializing dataset')
     
     dataset = Android_GNSS_Dataset(data_config)
+    test=dataset[0]
+    print(test)
