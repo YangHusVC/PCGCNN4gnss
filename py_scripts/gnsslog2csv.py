@@ -12,8 +12,8 @@ columns = ["Status", "millisSinceGpsEpoch", "SignalCount", "SignalIndex",
            "AzimuthDegrees", "ElevationDegrees", "UsedInFix", 
            "HasAlmanacData", "HasEphemerisData"]
 
-# GPS 时间起点相对 Unix 时间的偏移量（毫秒）
-GPS_UNIX_OFFSET_MS = 315964800000
+current_gps_time = 1273529462442
+last_unix_time = None  # 上一组的 UnixTimeMillis
 
 # 读取并筛选数据
 filtered_data = []
@@ -23,13 +23,15 @@ with open(input_file, "r") as f:
         if line.startswith("#"):
             continue  # 跳过表头行
         parts = line.strip().split(",")
-        if parts[0] == "Status":  # 仅保留 Status 关键字行
-            # 转换 UnixTimeMillis -> millisSinceGpsEpoch
+        if parts[0] == "Status":
             unix_time = int(parts[1])
-            millis_since_gps_epoch = unix_time - GPS_UNIX_OFFSET_MS
-            # 修改最后三位为 442
-            millis_since_gps_epoch = (millis_since_gps_epoch // 1000) * 1000 + 442
-            parts[1] = millis_since_gps_epoch  # 更新时间值
+            
+            # 判断是否是新的时间组（UnixTimeMillis变化了）
+            if unix_time != last_unix_time:
+                last_unix_time = unix_time
+                current_gps_time += 1000  # 增加时间戳（每组增加1）
+
+            parts[1] = current_gps_time  # 使用当前的时间戳
             filtered_data.append(parts)
 
 # 转换为 DataFrame 并保存

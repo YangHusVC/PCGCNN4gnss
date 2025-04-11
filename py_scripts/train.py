@@ -5,12 +5,13 @@
 ########################################################################
 import sys, os, csv, datetime
 parent_directory = os.path.split(os.getcwd())[0]
+parent_directory = os.path.join(parent_directory, 'PCGCNN4gnss')
 src_directory = os.path.join(parent_directory, 'src')
 data_directory = os.path.join(parent_directory, 'datasets')
 sys.path.insert(0, src_directory)
 import hydra
 from omegaconf import DictConfig, OmegaConf
-from dataloader import Android_GNSS_Dataset
+from android_dataset import Android_GNSS_Dataset
 
 @hydra.main(config_path="../config", config_name="train_gsdc_2021")
 def main(config: DictConfig) -> None:
@@ -32,5 +33,9 @@ def main(config: DictConfig) -> None:
     print('Initializing dataset')
     
     dataset = Android_GNSS_Dataset(data_config)
+    print('processsed data saved')
     test=dataset[0]
     print(test)
+
+if __name__=="__main__":
+    main()
