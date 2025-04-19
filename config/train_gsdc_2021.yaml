@@ -13,12 +13,14 @@ clkd_range: 1e-5
 raw_data_dir: "train"
 data_dir: "android_train_processed"
 bias_fname: 0
-model_name: 'set_transformer'   # ['set_transformer',  'deepsets']
+model_name: 'PCGCNN'   # ['set_transformer',  'deepsets']
 max_open_files: 32
 history: 0
 seed: 0
 chunk_size: 10
 max_sats: 13
+similarity_threshold: 0.9
+detach_prev_state: True
 writer: True
 resume: 0
 prefix: ??? # Prefix is a required variable to run the file

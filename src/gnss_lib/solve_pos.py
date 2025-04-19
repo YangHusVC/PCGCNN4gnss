@@ -56,6 +56,17 @@ def get_glonass_frequency(svid):
     return 1602e6 + k * 0.5625e6
 
 def solve_vel(cfreq, signalType,svid,los,vX,vY,vZ,e=1e-3):
+    #排除了GLOSNASS信号，因为数据集不能推测其中心频率
+    #mask = np.isin(signalType, ['GPS_L1', 'GAL_E1'])
+    mask = np.array(signalType) != 'GLO_G1'
+    cfreq = cfreq[mask]
+    signalType = np.array(signalType)[mask]
+    svid = np.array(svid)[mask]
+    los = los[mask]
+    vX = np.array(vX)[mask]
+    vY = np.array(vY)[mask]
+    vZ = np.array(vZ)[mask]
+
     lambdas = []
     for sig, sv in zip(signalType, svid):
         if sig == 'GLO_G1':

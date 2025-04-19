@@ -7,6 +7,82 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torch.nn as nn
+from torch_geometric.nn import SAGEConv, BatchNorm
+
+########################################################
+# PCGCNN
+class PCGCNN(nn.Module):
+    def __init__(self, 
+                 in_channels, 
+                 hidden_channels, 
+                 out_channels,
+                 num_layers=2,
+                 detach_prev_state=True):  # 控制 Kalman-like vs RNN-like
+        super(PCGCNN, self).__init__()
+
+        self.detach_prev_state = detach_prev_state
+        
+        # 输入映射层
+        self.input_linear = nn.Linear(in_channels, hidden_channels)
+
+        # 构造 SAGEConv 层
+        self.gnn_layers = nn.ModuleList([
+            SAGEConv(hidden_channels, hidden_channels) for _ in range(num_layers)
+        ])
+
+        # 批归一化
+        self.bn = BatchNorm(hidden_channels)
+
+        # 输出层
+        self.output_linear = nn.Linear(hidden_channels, out_channels)
+
+    def build_graph(self, h_prev, x_now):
+        """
+        构造特征和边：
+        - h_prev: [N, H]
+        - x_now: [N, D]
+        返回：
+        - h_combined: [N, H]，状态+观测融合后的节点特征
+        - edge_index: [2, E]，图连接
+        """
+        # 若 Kalman-like 模式：阻断梯度向前传播
+        if self.detach_prev_state and h_prev is not None:
+            h_prev = h_prev.detach()
+
+        if h_prev is None:
+            h_combined = self.input_linear(x_now)
+        else:
+            # 融合前状态和当前观测（可更复杂）
+            h_combined = self.input_linear(x_now) + h_prev  # 可换成 concat + MLP
+        
+        # 构造边（当前简单构造：全连接图）
+        N = h_combined.size(0)
+        row = torch.arange(N).repeat_interleave(N)
+        col = torch.arange(N).repeat(N)
+        edge_index = torch.stack([row, col], dim=0).to(x_now.device)
+
+        return h_combined, edge_index
+
+    def forward(self, h_prev, x_now):
+        """
+        h_prev: [N, H] 或 None
+        x_now: [N, D]
+        return: h_now: [N, H], output: [N, 3]
+        """
+
+        # 构图 & 融合
+        h_combined, edge_index = self.build_graph(h_prev, x_now)
+
+        # 逐层 GNN
+        h = h_combined
+        for conv in self.gnn_layers:
+            h = F.relu(conv(h, edge_index))
+
+        h = self.bn(h)
+
+        # 输出结果
+        out = self.output_linear(h)
+        return h, ou
 
 ########################################################
 # Set Transformer (modified implementation)

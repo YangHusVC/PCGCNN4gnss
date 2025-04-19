@@ -190,9 +190,10 @@ class Android_GNSS_Dataset(Dataset):
             guess_vXYZb=solve_vel(data['CarrierFrequencyHz'],data['signalType'],data['svid'],los_vector_cached,satXYZV['vx'],satXYZV['vy'],satXYZV['vz'])
         guess_vXYZb = zeros_array = np.zeros_like(true_XYZb)        # 0 noise for debugging 
 
-        guess_pXYZb=guess_XYZb+data_freq*guess_vXYZb#=f(guess_vXYZb)
+        '''guess_pXYZb=guess_XYZb+data_freq*guess_vXYZb#=f(guess_vXYZb)
         guess_pNEDb=guess_pXYZb.copy()
-        guess_pNEDb[:3]=ref_local.ecef2nedv(guess_pXYZb[:3, None])[:,0]
+        guess_pNEDb[:3]=ref_local.ecef2nedv(guess_pXYZb[:3, None])[:,0]'''
+        guess_dXYZb=data_freq*guess_vXYZb   #ECEF系，在network.build_graph中与ECEF系的guess直接加算，减小转换的误差
 
         error_estimation=estimated_error(data['ElevationDegrees'],data['Cn0DbHz'])
         
@@ -202,8 +203,12 @@ class Android_GNSS_Dataset(Dataset):
             'features': torch.Tensor(features),
             'true_correction': (true_NEDb-guess_NEDb)[:3],
             'guess': guess_XYZb,
-            'next': guess_pNEDb
+            'delta_position': torch.tensor(guess_dXYZb, dtype=torch.float32),
+            'sat_pos': torch.tensor(satXYZV[['x', 'y', 'z']].values, dtype=torch.float32),
+            'exp_pseudorange': torch.tensor(expected_pseudo, dtype=torch.float32),
+            'sat_type': torch.Tensor(data['constellationType'])
         }
+
 
         if self.transform is not None:
             sample = self.transform(sample)
@@ -242,7 +247,7 @@ class Android_GNSS_Dataset(Dataset):
             data_log[['millisSinceGpsEpoch','constellationType', 'Svid', 'Cn0DbHz', 'CarrierFrequencyHz', 'ElevationDegrees']], 
             on=['millisSinceGpsEpoch','constellationType', 'Svid'], 
             how='left'
-        ) #运算量需要优化WWWWWW'''
+        )'''
 
         data["PrM"] = data["rawPrM"] \
                         + data["satClkBiasM"] \
