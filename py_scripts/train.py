@@ -21,7 +21,28 @@ from android_dataset import Android_GNSS_Dataset
 from networks import PCGCNN, Net_Snapshot, DeepSetModel
 
 
+#用于数据增强
+class RandomTailDataset(torch.utils.data.Dataset):
+    def __init__(self, base_dataset, start_limit_ratio=0.2):
+        """
+        base_dataset: 一个 Subset 或 Dataset，假设是训练集部分（已有序）
+        start_limit_ratio: 起始点可选范围（比例），如 0.2 表示从前 20% 内取起点
+        """
+        self.base_dataset = base_dataset
+        self.total_len = len(base_dataset)
+        self.start_limit = int(start_limit_ratio * self.total_len)
+        self.start_idx = np.random.randint(0, max(self.start_limit, 1))  # 防止为0
+
+        self.indices = list(range(self.start_idx, self.total_len))
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        return self.base_dataset[self.indices[idx]]
+
 def collate_feat(batch):
+    #不用于GNN
     sorted_batch = sorted(batch, key=lambda x: x['features'].shape[0], reverse=True)
     features = [x['features'] for x in sorted_batch]
     features_padded = torch.nn.utils.rnn.pad_sequence(features)
@@ -36,8 +57,39 @@ def collate_feat(batch):
             'features': features_padded,
             'true_correction': correction,
             'guess': guess
-        }#WWWWWWWWWarning
-    return retval, pad_mask       
+        }
+    return retval, pad_mask  
+
+def collate_feat0(batch):
+    # 按 features 序列长度从大到小排序
+    sorted_batch = sorted(batch, key=lambda x: x['features'].shape[0], reverse=True)
+
+    # 拼接特征序列：无 padding，直接 stack（假设每个 sample 长度一致）
+    features = [x['features'] for x in sorted_batch]
+    features_tensor = torch.stack(features, dim=1)  # shape: [L, N, dim] 假设序列等长
+
+    correction = torch.stack([x['true_correction'] for x in sorted_batch])
+    guess = torch.stack([x['guess'] for x in sorted_batch])
+
+    # === 处理 meta 字段 === #
+    delta_position = torch.stack([x['delta_position'] for x in sorted_batch])
+    sat_pos = torch.stack([x['sat_pos'] for x in sorted_batch])
+    exp_pseudorange = torch.stack([x['exp_pseudorange'] for x in sorted_batch])
+    sat_type = torch.stack([x['sat_type'] for x in sorted_batch])
+
+    retval = {
+        'features': features_tensor,
+        'true_correction': correction,
+        'guess': guess,
+        'delta_position': delta_position,
+        'sat_pos': sat_pos,
+        'exp_pseudorange': exp_pseudorange,
+        'sat_type': sat_type
+    }
+
+    pad_mask = None  # 不再使用 pad，所以设为 None（或者 torch.zeros([N, L], dtype=torch.bool)）
+
+    return retval, pad_mask
 
 def test_eval(val_loader, net, loss_func):
     """
@@ -109,11 +161,17 @@ def main(config: DictConfig) -> None:
     dataset = Android_GNSS_Dataset(data_config)
     print('processsed data saved')
     
-    train_set, val_set = torch.utils.data.random_split(dataset, [int(config.frac*len(dataset)), len(dataset) - int(config.frac*len(dataset))])
+    total_len = len(dataset)
+    train_len = int(config.frac * total_len)  # config.frac = 0.8 之类
+
+    train_set = torch.utils.data.Subset(dataset, range(train_len))
+    val_set = torch.utils.data.Subset(dataset, range(train_len, total_len))
+    
+    #无数据增强，debug用
     dataloader = DataLoader(train_set, batch_size=config.batch_size,
-                            shuffle=True, num_workers=config.num_workers, collate_fn=collate_feat)#WWWWWWWWWWWWWWWWWWWWWWarning
+                            shuffle=True, num_workers=config.num_workers,collate_fn=collate_feat0)
     val_loader = DataLoader(val_set, batch_size=1, 
-                            shuffle=False, num_workers=0, collate_fn=collate_feat)
+                            shuffle=False, num_workers=0,collate_fn=collate_feat0)
     print('Initializing network: ', config.model_name)
     if config.model_name == "PCGCNN":
         net = PCGCNN(in_channels=9, hidden_channels=128, out_channels=3, detach_prev_state=config.detach_prev_state,similarity_threshold=config.similarity_threshold)
@@ -140,6 +198,15 @@ def main(config: DictConfig) -> None:
     
     for epoch in range(config.N_train_epochs):
         # TRAIN Phase
+
+        '''
+        #带数据增强
+        train_rs_dataset = RandomTailDataset(train_set, start_limit_ratio=config.trainset_split_ratio) 
+        dataloader = DataLoader(train_rs_dataset, batch_size=1,
+                            shuffle=False, num_workers=config.num_workers)
+
+        val_loader = DataLoader(val_set, batch_size=1,
+                            shuffle=False, num_workers=0)'''
         net.train()
         h_prev = None
         guess_prev=None
