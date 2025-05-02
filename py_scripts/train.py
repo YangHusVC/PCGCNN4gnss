@@ -222,7 +222,7 @@ def main(config: DictConfig) -> None:
                 'sat_pos':_sample_batched['sat_pos'].float().cuda(),
                 'exp_pseudorange':_sample_batched['exp_pseudorange'].float().cuda(),
                 'sat_type':_sample_batched['sat_type'].long(),
-                'guess_prev':torch.Tensor(guess_prev).float.cuda
+                'guess_prev':torch.Tensor(guess_prev).float.cuda()
             }
             #pad_mask = pad_mask.cuda()
             pred_correction, h_prev = net(x, h_prev=h_prev,meta=meta)

@@ -1,14 +1,14 @@
 ########################################################################
-# Author(s):    Shubh Gupta
-# Date:         22 September 2021
+# Author(s):    Zhichao Yang
+# Date:         2 March, 2025
 # Desc:         Evaluate DNN to output position corrections for simulated
 #               measurements
 ########################################################################
 import sys, os, csv, datetime
 parent_directory = os.path.split(os.getcwd())[0]
+parent_directory = os.path.join(parent_directory, 'PCGCNN4gnss')
 src_directory = os.path.join(parent_directory, 'src')
-data_directory = os.path.join(parent_directory, 'data')
-ephemeris_data_directory = os.path.join(data_directory, 'ephemeris')
+data_directory = os.path.join(parent_directory, 'datasets')
 sys.path.insert(0, src_directory)
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.preprocessing import StandardScaler
@@ -24,22 +24,22 @@ import torch.nn.functional as F
 import torch.nn as nn
 import scipy.stats as st
 import gnss_lib.solve_pos as solve_pos
-from correction_network.android_dataset import Android_GNSS_Dataset, expected_measurements
-from tqdm import tqdm
-from correction_network.networks import Net_Snapshot
 
-weight_dict = {
-    '15': "android_transformer_1000ep_2021-08-25_16-53-59",
+from tqdm import tqdm
+from android_dataset import Android_GNSS_Dataset
+from networks import PCGCNN, Net_Snapshot, DeepSetModel
+
+version_dict = {
+    '1': "andriod_PCGCNN_testrun",
     '30': "android_transformer_1000ep_pos30_2021-08-28_11-23-06",
 }
 
-key_wt = 15   # initialization range (from training) to use
+version = 1  
 
 config = {
     "root": os.path.join(data_directory),
     "raw_data_dir" : "val",
     "data_dir": "android_val_processed",
-    "guess_range": [key_wt, key_wt, key_wt, 1e-5, 1e-5, 1e-5, 1e-5, 1e-5],
     "history": 1,
     "seed": 1,
     "chunk_size": 100,
@@ -51,15 +51,17 @@ config = {
 
 dataset = Android_GNSS_Dataset(config)
 
-net = Net_Snapshot(dataset[0]['features'].size()[1], 1, len(dataset[0]['true_correction']))
+'''net = Net_Snapshot(dataset[0]['features'].size()[1], 1, len(dataset[0]['true_correction']))
 net.load_state_dict(torch.load(os.path.join(data_directory, 'weights', weight_dict[str(key_wt)])))
-net.cuda()
+net.cuda()'''
+
+gnet=PCGCNN(in_channels=9, hidden_channels=128, out_channels=3, similarity_threshold=0.9)
+gnet.load_state_dict(torch.load(os.path.join(data_directory, version_dict[str(version)])))
+gnet.cuda()
 
 # Create empty dicts and lists
-ls_rand = {}
 ls_wls1 = {}
 
-ls_rand_net = {}
 ls_wls1_net = {}
 
 y_ls = []
@@ -82,11 +84,12 @@ for b_t_sel in range(len(val_idx_list)-1):
     true_XYZb = np.array([_gt_data['ecefX'], _gt_data['ecefY'], _gt_data['ecefZ'], _gt_data['b']])
     base_frame = coord.LocalCoord.from_ecef(true_XYZb[:3])
 
-    in1 = pd.read_csv(os.path.join(dirname, 'goGPS_WLS.csv'))
+    '''in1 = pd.read_csv(os.path.join(dirname, 'goGPS_WLS.csv'))'''
     b_key = b_key[0]
 
     print(b_key, b_t_idx)
-
+    h_prev = None
+    guess_prev=None
     for _ in tqdm(range(val_idx_list[b_t_sel], val_idx_list[b_t_sel+1])):
         key, t_idx = dataset.indices[b_t_idx]
         key_file, times = dataset.get_files(key)
@@ -103,21 +106,25 @@ for b_t_sel in range(len(val_idx_list)-1):
         _data = dataset.__getitem__(b_t_idx)
         _ecef0 = _data['guess']
         ref_local = coord.LocalCoord.from_ecef(_ecef0[:3])
-        ls_rand[times[t_idx]] = _ecef0[:3]
         x = _data['features'].float().cuda()
+        meta={
+                'delta_position': _data['delta_position'].float().cuda(),
+                'sat_pos':_data['sat_pos'].float().cuda(),
+                'exp_pseudorange':_data['exp_pseudorange'].float().cuda(),
+                'sat_type':_data['sat_type'].long(),
+                'guess_prev':torch.Tensor(guess_prev).float.cuda()
+            }
         y = _data['true_correction']
-        _y = net(x.unsqueeze(1)).cpu().detach().numpy()
-        _ecef_net_rand = ref_local.ned2ecef(_y[0, :])[:, 0]
-        ls_rand_net[times[t_idx]] = _ecef_net_rand
+        _y, h_prev= gnet(x.unsqueeze(1),h_prev=h_prev,meta=meta).cpu().detach().numpy()
+        '''_ecef_net_rand = ref_local.ned2ecef(_y[0, :])[:, 0]'''
+        '''ls_rand_net[times[t_idx]] = _ecef_net_rand'''
         ls_gt_corr[times[t_idx]] = ref_local.ned2ecef(y)[:, 0]
         y_ls.append(y)
         y_hat_ls.append(_y)
 
     #     WLS1
-        _int1 = in1[in1['GPS Time[s]']==times[t_idx]]
-        _ecef1 = np.array([_int1['ECEF X[m]'].to_numpy()[0], _int1['ECEF Y[m]'].to_numpy()[0], _int1['ECEF Z[m]'].to_numpy()[0], _int1['Clock Bias[s]'].to_numpy()[0]*3e8])
-        ls_wls1[times[t_idx]] = _ecef1[:3]
-        y_wls_ls.append(ref_local.ecef2ned(_ecef1[:3, None])[:, 0])
+        ls_wls1[times[t_idx]] = _ecef0[:3]
+        y_wls_ls.append(ref_local.ecef2ned(_ecef0[:3, None])[:, 0])
 
         ls_gt[times[t_idx]] = true_XYZb[:3]
 
@@ -125,9 +132,9 @@ for b_t_sel in range(len(val_idx_list)-1):
         b_t_idx += 1
 
 y_diff = (np.array(y_ls) - np.squeeze(np.array(y_hat_ls), axis=1))
-y_og = np.array(y_ls)
-y_wls = np.array(y_ls) - np.array(y_wls_ls)
+#y_og = np.array(y_ls)
+y_wls = np.array(y_ls) #- np.array(y_wls_ls)
 
-print("Mean positioning error along NED in initial positions (m): ", np.mean(np.abs(y_og), axis=0))
+'''print("Mean positioning error along NED in initial positions (m): ", np.mean(np.abs(y_og), axis=0))'''
 print("Mean positioning error along NED in DNN corrected positions (m): ", np.mean(np.abs(y_diff), axis=0))
 print("Mean positioning error along NED in WLS positions (m): ", np.nanmean(np.abs(y_wls), axis=0))
