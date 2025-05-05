@@ -12,7 +12,8 @@ from numpy.random import default_rng
 
 from gnss_lib.utils import datetime_to_tow
 import gnss_lib.coordinates as coord
-from gnss_lib.solve_pos import solve_pos, solve_vel
+from gnss_lib.solve_pos import solve_pos
+from gnss_lib.solve_vel import solve_vel
 pd.options.mode.chained_assignment = None  # default='warn'
 
 class Android_GNSS_Dataset(Dataset):
@@ -206,7 +207,7 @@ class Android_GNSS_Dataset(Dataset):
             'delta_position': torch.tensor(guess_dXYZb, dtype=torch.float32),
             'sat_pos': torch.tensor(satXYZV[['x', 'y', 'z']].values, dtype=torch.float32),
             'exp_pseudorange': torch.tensor(expected_pseudo, dtype=torch.float32),
-            'sat_type': torch.Tensor(data['constellationType'])
+            'sat_type': torch.tensor(data['constellationType'].values)
         }
 
 

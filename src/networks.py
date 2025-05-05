@@ -7,9 +7,9 @@ import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torch.nn as nn
-from torch_geometric.nn import SAGEConv, BatchNorm
+from torch_geometric.nn import SAGEConv, BatchNorm, global_mean_pool
 
-import gnss_lib.coordinates as coord
+import gnss_lib.coordinates_gpu as coord
 
 ########################################################
 # PCGCNN
@@ -27,7 +27,8 @@ class PCGCNN(nn.Module):
         self.similarity_threshold = similarity_threshold
         
         # 输入映射层
-        self.input_linear = nn.Linear(in_channels, hidden_channels)
+        #self.input_linear = nn.Linear(in_channels, hidden_channels)
+        self.input_gnn = SAGEConv(in_channels, hidden_channels) 
 
         # 构造 SAGEConv 层
         self.gnn_layers = nn.ModuleList([
@@ -36,6 +37,9 @@ class PCGCNN(nn.Module):
 
         # 批归一化
         self.bn = BatchNorm(hidden_channels)
+
+        # 全局池化层（将节点特征聚合成图特征）
+        self.pool = global_mean_pool  # 或其他池化函数如 global_max_pool
 
         # 输出层
         self.output_linear = nn.Linear(hidden_channels, out_channels)
@@ -57,25 +61,30 @@ class PCGCNN(nn.Module):
         exp_pseudo = meta['exp_pseudorange']  # [N]
         N = x_now.size(0)
         guess_prev=meta['guess_prev']
+        delta_position=meta['delta_position'][0,:3].squeeze(0)
 
         if h_prev is not None:
             if self.detach_prev_state:
                 h_prev = h_prev.detach()
+            h_prev = h_prev.squeeze(0)
             # 预测位置 = 上一时刻预测 + 本时刻 delta
-            ref_local = coord.LocalCoord.from_ecef(guess_prev[:3])
-            ned_prev=ref_local.ecef2ned(guess_prev[:3, None])[:, 0]
-            pred_position = ref_local.ned2ecef(ned_prev+h_prev) + meta['delta_position']  # [3]
+            ref_local = coord.LocalCoordGPU.from_ecef(guess_prev[0,:3])
+            ned_prev=ref_local.ecef2ned(guess_prev[0,:3])
+            pred_position = ref_local.ned2ecef(ned_prev+h_prev) + delta_position  # [3]
             # 广播计算预测位置到每个卫星的距离
-            dists = torch.norm(sat_pos - pred_position.unsqueeze(0), dim=1)  # [N]
-            ppr = dists - exp_pseudo  # [N]
+            pred_position_expanded = pred_position.unsqueeze(0).unsqueeze(0)  # [1, 1, 3]
+            diff = sat_pos - pred_position_expanded          # 广播后 [1, 32, 3]
+            dists = torch.norm(diff, dim=2)                 # 输出 [1, 32]
+            ppr = dists - exp_pseudo                        # 形状 [1, 32]
+            ppr=ppr.squeeze(0)
         else:
         # 没有预测位置，用原始特征里的伪距残差（第一列）作为 PPR
-            ppr = x_now[:, 0]  # [N]
+            ppr = x_now[:, 0] # [1,N]
 
     # 拼接 PPR 到特征前
-        x_with_ppr = torch.cat([ppr.unsqueeze(1), x_now], dim=1)  # [N, D+1]
+        x_with_ppr = torch.cat([ppr.unsqueeze(1) , x_now], dim=1)  # [N, D+1]
 
-        sat_type=meta['sat_type']
+        sat_type=meta['sat_type'][0]
         
         N = x_with_ppr.size(0)
         device = x_with_ppr.device
@@ -116,14 +125,21 @@ class PCGCNN(nn.Module):
 
         # 逐层 GNN
         h = h_combined
-        for conv in self.gnn_layers:
-            h = F.relu(conv(h, edge_index))
-
+        h=F.relu(self.input_gnn(h,edge_index))
         h = self.bn(h)
 
+        for conv in self.gnn_layers:
+            h = F.relu(conv(h, edge_index))
+            h = self.bn(h)
+
+        # batch 是标识节点属于哪个图的索引张量（形状 [N,]）
+        N = h.shape[0]
+        batch = torch.zeros(N, dtype=torch.long, device=h_combined.device) 
+        # 例如：batch = torch.tensor([0,0,0,1,1,1,1]) 表示前3节点属于图0，后4节点属于图1
+        h_pooled = self.pool(h,batch)  # 输出形状 [num_graphs, hidden_channels]
         # 输出结果
-        out = self.output_linear(h)
-        return h, out
+        out = self.output_linear(h_pooled)
+        return out
 
 
 ########################################################

@@ -68,8 +68,8 @@ def collate_feat0(batch):
     features = [x['features'] for x in sorted_batch]
     features_tensor = torch.stack(features, dim=1)  # shape: [L, N, dim] 假设序列等长
 
-    correction = torch.stack([x['true_correction'] for x in sorted_batch])
-    guess = torch.stack([x['guess'] for x in sorted_batch])
+    correction = torch.Tensor([x['true_correction'] for x in sorted_batch])
+    guess = torch.Tensor([x['guess'] for x in sorted_batch])
 
     # === 处理 meta 字段 === #
     delta_position = torch.stack([x['delta_position'] for x in sorted_batch])
@@ -100,7 +100,7 @@ def test_eval(val_loader, net, loss_func):
     net.eval()
 
     h_prev = None
-    guess_prev = None
+    guess_prev = np.zeros(3) #WWWWWWWWWWWWWWWWWWWW
 
     with torch.no_grad():
         for sample_batched, pad_mask in tqdm(val_loader, desc='test', leave=False):
@@ -123,7 +123,7 @@ def test_eval(val_loader, net, loss_func):
             }
 
             # 前向推理
-            pred_correction, h_prev = net(x, h_prev=h_prev, pad_mask=pad_mask, meta=meta)
+            pred_correction, h_prev = net(x, h_prev=h_prev, meta=meta)
 
             # 更新 guess_prev 为当前的 guess（你在 dataloader 提供）
             guess_prev = _sample_batched['guess'].float().cuda()
@@ -174,7 +174,7 @@ def main(config: DictConfig) -> None:
                             shuffle=False, num_workers=0,collate_fn=collate_feat0)
     print('Initializing network: ', config.model_name)
     if config.model_name == "PCGCNN":
-        net = PCGCNN(in_channels=9, hidden_channels=128, out_channels=3, detach_prev_state=config.detach_prev_state,similarity_threshold=config.similarity_threshold)
+        net = PCGCNN(in_channels=6, hidden_channels=64, out_channels=3, detach_prev_state=config.detach_prev_state,similarity_threshold=config.similarity_threshold)
     elif config.model_name=='Set Transformer':
         net = Net_Snapshot(train_set[0]['features'].size()[1], 1, len(train_set[0]['true_correction']))     # define the network
     else:
@@ -209,7 +209,7 @@ def main(config: DictConfig) -> None:
                             shuffle=False, num_workers=0)'''
         net.train()
         h_prev = None
-        guess_prev=None
+        guess_prev=np.zeros(3)
         for i, sample_batched in enumerate(dataloader):
             _sample_batched, pad_mask = sample_batched
             
@@ -222,10 +222,11 @@ def main(config: DictConfig) -> None:
                 'sat_pos':_sample_batched['sat_pos'].float().cuda(),
                 'exp_pseudorange':_sample_batched['exp_pseudorange'].float().cuda(),
                 'sat_type':_sample_batched['sat_type'].long(),
-                'guess_prev':torch.Tensor(guess_prev).float.cuda()
+                'guess_prev':torch.tensor(guess_prev).clone().detach().float().cuda()#torch.tensor(guess_prev).float().cuda() #之前是wls算出来的，不需要求梯度
             }
             #pad_mask = pad_mask.cuda()
-            pred_correction, h_prev = net(x, h_prev=h_prev,meta=meta)
+            pred_correction= net(x_now=x.squeeze(1), h_prev=h_prev,meta=meta)
+            h_prev = pred_correction 
             loss = loss_func(pred_correction, y)
             if config.writer:
                 writer.add_scalar("Loss/train", loss, count)
