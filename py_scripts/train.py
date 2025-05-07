@@ -105,7 +105,8 @@ def test_eval(val_loader, net, loss_func):
     with torch.no_grad():
         for sample_batched, pad_mask in tqdm(val_loader, desc='test', leave=False):
             _sample_batched = sample_batched
-            pad_mask = pad_mask.cuda()
+            if pad_mask!=None:
+                pad_mask = pad_mask.cuda()
 
             x = _sample_batched['features'].float().cuda()
             y = _sample_batched['true_correction'].float().cuda()
@@ -123,7 +124,8 @@ def test_eval(val_loader, net, loss_func):
             }
 
             # 前向推理
-            pred_correction, h_prev = net(x, h_prev=h_prev, meta=meta)
+            pred_correction= net(x_now=torch.squeeze(x,dim=1), h_prev=h_prev, meta=meta)
+            h_prev = pred_correction 
 
             # 更新 guess_prev 为当前的 guess（你在 dataloader 提供）
             guess_prev = _sample_batched['guess'].float().cuda()
@@ -133,7 +135,7 @@ def test_eval(val_loader, net, loss_func):
 
             stats_val.append((y - pred_correction).cpu().numpy())
 
-    avg_abs_error = np.mean(np.abs(np.concatenate(stats_val, axis=0)), axis=0)
+    avg_abs_error = np.mean(np.abs(np.array(stats_val)), axis=0)#np.mean(np.abs(np.concatenate(stats_val, axis=0)), axis=0)
     avg_loss = total_loss / len(stats_val)
 
     return avg_abs_error, avg_loss

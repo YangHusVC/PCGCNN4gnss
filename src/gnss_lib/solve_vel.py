@@ -38,6 +38,7 @@ def solve_vel(cfreq, signalType,svid,los,vX,vY,vZ,e=1e-3):
     vZ = np.array(vZ)[mask]
 
     lambdas = []
+    f_carriers=[]
     for sig, sv in zip(signalType, svid):
         if sig == 'GLO_G1':
             f_carrier = get_glonass_frequency(sv)
@@ -46,7 +47,11 @@ def solve_vel(cfreq, signalType,svid,los,vX,vY,vZ,e=1e-3):
         if np.isnan(f_carrier):
             raise ValueError(f"Unknown signal type: {sig}")
         lambdas.append(constants.LIGHTSPEED / f_carrier)
+        f_carriers.append(f_carrier)
     lambdas = np.array(lambdas)
+    f_carriers=np.array(f_carriers)
+    cfreq=np.array(cfreq)
+    doppler_shift=cfreq-f_carriers
 
     # 卫星速度向量 shape: (n, 3)
     v_sat = np.stack([vX, vY, vZ], axis=1)
@@ -59,17 +64,19 @@ def solve_vel(cfreq, signalType,svid,los,vX,vY,vZ,e=1e-3):
         vx, vy, vz, cdt = vars
         v_rx = np.array([vx, vy, vz])
         relative_vel = v_sat - v_rx  # 卫星速度 - 接收机速度
-        doppler_pred = np.sum(relative_vel * los, axis=1) / lambdas + cdt
-        residual = cfreq - doppler_pred
+        doppler_pred = -np.sum(relative_vel * los, axis=1) / lambdas + cdt
+        residual = doppler_shift - doppler_pred
         return residual
 
     def df(vars):
         J = np.zeros((len(cfreq), 4))
         for i in range(len(cfreq)):
-            J[i, 0] = los[i, 0] / lambdas[i]
-            J[i, 1] = los[i, 1] / lambdas[i]
-            J[i, 2] = los[i, 2] / lambdas[i]
+            # 速度分量的导数应为负号
+            J[i, 0] = -los[i, 0] / lambdas[i]
+            J[i, 1] = -los[i, 1] / lambdas[i]
+            J[i, 2] = -los[i, 2] / lambdas[i]
             J[i, 3] = -1
-        return -J  # 注意是负的导数方向
+        return J  # 不再返回负矩阵！
+        #return -J  # 注意是负的导数方向
     v_fix, res_err = newton_raphson(f, df, x0, e=e)
     return v_fix  # [vx, vy, vz, cdt]

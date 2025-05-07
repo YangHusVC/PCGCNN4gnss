@@ -59,7 +59,7 @@ def test_eval(val_loader, net, loss_func):
     for i in tqdm(range(100), desc='test', leave=False):
         try:
             sample_batched = next(generator)
-        except StopIteration:
+        except StopIteration: 
             generator = iter(val_loader)
             sample_batched = next(generator)
         _sample_batched, pad_mask = sample_batched

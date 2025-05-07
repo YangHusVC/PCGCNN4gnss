@@ -411,11 +411,12 @@ def expected_measurements(dframe, guess_XYZb):
     return expected_rho, satXYZV
 
 def estimated_error(eli_angle, cn0,alpha=1):
-    arr1=np.radians(eli_angle.to_numpy())
+    '''    arr1=np.radians(eli_angle.to_numpy())
     arr2=cn0.to_numpy()
 
     arr1=1/(np.sin(arr1)**2)
     arr2=10**(-arr2/10)
 
-    out=arr1*arr2
+    out=arr1*arr2'''
+    out=cn0.to_numpy()
     return out
