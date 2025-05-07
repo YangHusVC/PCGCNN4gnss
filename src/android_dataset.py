@@ -188,7 +188,7 @@ class Android_GNSS_Dataset(Dataset):
         los_vector = ref_local.ecef2nedv(los_vector)
 
         if guess_vXYZb is None:
-            guess_vXYZb=solve_vel(data['CarrierFrequencyHz'],data['signalType'],data['svid'],los_vector_cached,satXYZV['vx'],satXYZV['vy'],satXYZV['vz'])
+            guess_vXYZb=solve_vel(data['pseudorangeRateMetersPerSecond'],data['signalType'],data['svid'],los_vector_cached,satXYZV['vx'],satXYZV['vy'],satXYZV['vz'])
         guess_vXYZb = zeros_array = np.zeros_like(true_XYZb)        # 0 noise for debugging 
 
         '''guess_pXYZb=guess_XYZb+data_freq*guess_vXYZb#=f(guess_vXYZb)
@@ -314,7 +314,8 @@ class Android_GNSS_Dataset(Dataset):
             grouped_first = grouped.first().reset_index()
 
             dframe_expan = dframe_expan.merge(
-                grouped_first[['millisSinceGpsEpoch','constellationType', 'svid', 'Cn0DbHz', 'CarrierFrequencyHz', 'ElevationDegrees']], 
+                #grouped_first[['millisSinceGpsEpoch','constellationType', 'svid', 'Cn0DbHz', 'CarrierFrequencyHz', 'ElevationDegrees']], 
+                grouped_first[['millisSinceGpsEpoch','constellationType', 'svid', 'Cn0DbHz', 'pseudorangeRateMetersPerSecond']], 
                 on=['millisSinceGpsEpoch','constellationType', 'svid'], 
                 how='left')
             #dframe.drop_duplicates(inplace=True)
