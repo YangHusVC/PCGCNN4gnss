@@ -161,8 +161,8 @@ class Android_GNSS_Dataset(Dataset):
         '''
         #wls result as guessed
         if guess_XYZb is None:
-            guess_XYZb=solve_pos(data.loc[:,'PrM'].to_numpy(),data.loc[:, "xSatPosM"].to_numpy(),data.loc[:, "ySatPosM"].to_numpy(),data.loc[:, "xSatPosM"].to_numpy(),np.zeros_like(data.loc[:, 'PrM'].to_numpy()))
-        guess_XYZb = np.copy(true_XYZb)         # 0 noise for debugging 
+            guess_XYZb=solve_pos(data.loc[:,'PrM'].to_numpy(),data.loc[:, "xSatPosM"].to_numpy(),data.loc[:, "ySatPosM"].to_numpy(),data.loc[:, "zSatPosM"].to_numpy(),np.zeros_like(data.loc[:, 'PrM'].to_numpy()))
+        #guess_XYZb = np.copy(true_XYZb)         # 0 noise for debugging 
         
         # Transform to NED frame
         ref_local = coord.LocalCoord.from_ecef(guess_XYZb[:3])
@@ -188,26 +188,27 @@ class Android_GNSS_Dataset(Dataset):
         los_vector = ref_local.ecef2nedv(los_vector)
 
         if guess_vXYZb is None:
-            guess_vXYZb=solve_vel(data['pseudorangeRateMetersPerSecond'],data['signalType'],data['svid'],los_vector_cached,satXYZV['vx'],satXYZV['vy'],satXYZV['vz'])
-        guess_vXYZb = zeros_array = np.zeros_like(true_XYZb)        # 0 noise for debugging 
+            guess_vXYZb=solve_vel(data['pseudorangeRateMetersPerSecond'],los_vector_cached,satXYZV['vx'],satXYZV['vy'],satXYZV['vz'])
+        #guess_vXYZb = zeros_array = np.zeros_like(true_XYZb)        # 0 noise for debugging 
 
         '''guess_pXYZb=guess_XYZb+data_freq*guess_vXYZb#=f(guess_vXYZb)
         guess_pNEDb=guess_pXYZb.copy()
         guess_pNEDb[:3]=ref_local.ecef2nedv(guess_pXYZb[:3, None])[:,0]'''
         guess_dXYZb=data_freq*guess_vXYZb   #ECEF系，在network.build_graph中与ECEF系的guess直接加算，减小转换的误差
 
-        error_estimation=estimated_error(data['ElevationDegrees'],data['Cn0DbHz'])
+        error_estimation=estimated_error(data['Cn0DbHz'])
         
         features = np.concatenate((np.reshape(residuals, [-1, 1]), los_vector, np.reshape(error_estimation, [-1, 1])), axis=1)
         
         sample = {
             'features': torch.Tensor(features),
             'true_correction': (true_NEDb-guess_NEDb)[:3],
-            'guess': guess_XYZb,
+            'guess': torch.from_numpy(guess_XYZb),
             'delta_position': torch.tensor(guess_dXYZb, dtype=torch.float32),
             'sat_pos': torch.tensor(satXYZV[['x', 'y', 'z']].values, dtype=torch.float32),
             'exp_pseudorange': torch.tensor(expected_pseudo, dtype=torch.float32),
-            'sat_type': torch.tensor(data['constellationType'].values)
+            'sat_type': torch.tensor(data['constellationType'].values),
+            'PrM':torch.tensor(data['PrM'].values, dtype=torch.float32)
         }
 
 
@@ -240,7 +241,7 @@ class Android_GNSS_Dataset(Dataset):
                 og_name = name
         data = pd.read_csv(os.path.join(self.in_root, _path, og_name))
         for name in names:
-            if name.endswith("_GnssLog.csv"):
+            if name.endswith("_GnssRaw.csv"):
                 log_name = name
         data_log=pd.read_csv(os.path.join(self.in_root, _path, log_name))
 
@@ -411,7 +412,7 @@ def expected_measurements(dframe, guess_XYZb):
     satXYZV['vz'] = satvZ
     return expected_rho, satXYZV
 
-def estimated_error(eli_angle, cn0,alpha=1):
+def estimated_error(cn0,alpha=1):
     '''    arr1=np.radians(eli_angle.to_numpy())
     arr2=cn0.to_numpy()
 

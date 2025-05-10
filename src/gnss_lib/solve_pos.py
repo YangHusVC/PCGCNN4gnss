@@ -39,7 +39,7 @@ def solve_pos(prange, X, Y, Z, B, e=1e-3):
   
   x0 = np.array([x, y, z, cdt])
   x_fix, res_err = newton_raphson(f, df, x0, e=e)
-  x_fix[-1] = x_fix[-1]*1e6/constants.LIGHTSPEED
+  #x_fix[-1] = x_fix[-1]*1e6/constants.LIGHTSPEED
 
   return x_fix
 

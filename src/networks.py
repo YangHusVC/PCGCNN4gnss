@@ -57,13 +57,18 @@ class PCGCNN(nn.Module):
         - x_with_ppr: [N, D+1]，每个节点的新特征（前面追加 PPR）
         - edge_index: [2, E]，图连接（全连接）
         """
-        sat_pos = meta['sat_pos']        # [N, 3]
-        exp_pseudo = meta['exp_pseudorange']  # [N]
+        
+        #exp_pseudo = meta['exp_pseudorange']  # [N]
         N = x_now.size(0)
-        guess_prev=meta['guess_prev']
-        delta_position=meta['delta_position'][0,:3].squeeze(0)
+        
 
         if h_prev is not None:
+            guess_prev=meta['guess_prev']
+            delta_position=meta['delta_position'][0,:3].squeeze(0)
+            sat_pos = meta['sat_pos']        # [N, 3]
+            PrM=meta['PrM']
+            guess=meta['guess']
+
             if self.detach_prev_state:
                 h_prev = h_prev.detach()
             h_prev = h_prev.squeeze(0)
@@ -74,8 +79,8 @@ class PCGCNN(nn.Module):
             # 广播计算预测位置到每个卫星的距离
             pred_position_expanded = pred_position.unsqueeze(0).unsqueeze(0)  # [1, 1, 3]
             diff = sat_pos - pred_position_expanded          # 广播后 [1, 32, 3]
-            dists = torch.norm(diff, dim=2)                 # 输出 [1, 32]
-            ppr = dists - exp_pseudo                        # 形状 [1, 32]
+            dists = torch.norm(diff, dim=2)+guess[-1]               # 输出 [1, 32]
+            ppr = PrM - dists#exp_pseudo                        # 形状 [1, 32]
             ppr=ppr.squeeze(0)
         else:
         # 没有预测位置，用原始特征里的伪距残差（第一列）作为 PPR

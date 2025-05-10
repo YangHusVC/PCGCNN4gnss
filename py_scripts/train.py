@@ -69,13 +69,14 @@ def collate_feat0(batch):
     features_tensor = torch.stack(features, dim=1)  # shape: [L, N, dim] 假设序列等长
 
     correction = torch.Tensor([x['true_correction'] for x in sorted_batch])
-    guess = torch.Tensor([x['guess'] for x in sorted_batch])
+    guess = torch.stack([x['guess'] for x in sorted_batch])
 
     # === 处理 meta 字段 === #
     delta_position = torch.stack([x['delta_position'] for x in sorted_batch])
     sat_pos = torch.stack([x['sat_pos'] for x in sorted_batch])
     exp_pseudorange = torch.stack([x['exp_pseudorange'] for x in sorted_batch])
     sat_type = torch.stack([x['sat_type'] for x in sorted_batch])
+    PrM = torch.stack([x['PrM'] for x in sorted_batch])
 
     retval = {
         'features': features_tensor,
@@ -84,7 +85,8 @@ def collate_feat0(batch):
         'delta_position': delta_position,
         'sat_pos': sat_pos,
         'exp_pseudorange': exp_pseudorange,
-        'sat_type': sat_type
+        'sat_type': sat_type,
+        'PrM':  PrM
     }
 
     pad_mask = None  # 不再使用 pad，所以设为 None（或者 torch.zeros([N, L], dtype=torch.bool)）
@@ -100,7 +102,8 @@ def test_eval(val_loader, net, loss_func):
     net.eval()
 
     h_prev = None
-    guess_prev = np.zeros(3) #WWWWWWWWWWWWWWWWWWWW
+    guess_prev = torch.zeros(3) #WWWWWWWWWWWWWWWWWWWW
+    delta_position_prev=torch.zeros(3)
 
     with torch.no_grad():
         for sample_batched, pad_mask in tqdm(val_loader, desc='test', leave=False):
@@ -115,20 +118,23 @@ def test_eval(val_loader, net, loss_func):
             if guess_prev is None:
                 guess_prev = _sample_batched['guess'].float().cuda()
 
-            meta = {
-                'delta_position': _sample_batched['delta_position'].float().cuda(),
-                'sat_pos': _sample_batched['sat_pos'].float().cuda(),
-                'exp_pseudorange': _sample_batched['exp_pseudorange'].float().cuda(),
-                'sat_type': _sample_batched['sat_type'].long().cuda(),
-                'guess_prev': guess_prev
+            meta={
+                'delta_position': delta_position_prev.float().cuda(),
+                'sat_pos':_sample_batched['sat_pos'].float().cuda(),
+                #'exp_pseudorange':_sample_batched['exp_pseudorange'].float().cuda(),
+                'PrM':_sample_batched['PrM'].float().cuda(),
+                'sat_type':_sample_batched['sat_type'].long(),
+                'guess_prev':guess_prev.float().cuda(),#torch.tensor(guess_prev).clone().detach().float().cuda() #之前是wls算出来的，不需要求梯度
+                'guess':_sample_batched['guess'][0].float().cuda()
             }
 
             # 前向推理
-            pred_correction= net(x_now=torch.squeeze(x,dim=1), h_prev=h_prev, meta=meta)
+            pred_correction= net(x_now=x.squeeze(1), h_prev=h_prev,meta=meta)
             h_prev = pred_correction 
 
             # 更新 guess_prev 为当前的 guess（你在 dataloader 提供）
-            guess_prev = _sample_batched['guess'].float().cuda()
+            guess_prev=_sample_batched['guess']
+            delta_position_prev=_sample_batched['delta_position']
 
             loss = loss_func(pred_correction, y)
             total_loss += loss.item()
@@ -171,7 +177,7 @@ def main(config: DictConfig) -> None:
     
     #无数据增强，debug用
     dataloader = DataLoader(train_set, batch_size=config.batch_size,
-                            shuffle=True, num_workers=config.num_workers,collate_fn=collate_feat0)
+                            shuffle=False, num_workers=config.num_workers,collate_fn=collate_feat0)
     val_loader = DataLoader(val_set, batch_size=1, 
                             shuffle=False, num_workers=0,collate_fn=collate_feat0)
     print('Initializing network: ', config.model_name)
@@ -211,7 +217,8 @@ def main(config: DictConfig) -> None:
                             shuffle=False, num_workers=0)'''
         net.train()
         h_prev = None
-        guess_prev=np.zeros(3)
+        guess_prev=torch.zeros(3)
+        delta_position_prev=torch.zeros(3)
         for i, sample_batched in enumerate(dataloader):
             _sample_batched, pad_mask = sample_batched
             
@@ -220,20 +227,23 @@ def main(config: DictConfig) -> None:
             
 
             meta={
-                'delta_position': _sample_batched['delta_position'].float().cuda(),
+                'delta_position': delta_position_prev.float().cuda(),
                 'sat_pos':_sample_batched['sat_pos'].float().cuda(),
-                'exp_pseudorange':_sample_batched['exp_pseudorange'].float().cuda(),
+                #'exp_pseudorange':_sample_batched['exp_pseudorange'].float().cuda(),
+                'PrM':_sample_batched['PrM'].float().cuda(),
                 'sat_type':_sample_batched['sat_type'].long(),
-                'guess_prev':torch.tensor(guess_prev).clone().detach().float().cuda()#torch.tensor(guess_prev).float().cuda() #之前是wls算出来的，不需要求梯度
+                'guess_prev':guess_prev.float().cuda(),#torch.tensor(guess_prev).clone().detach().float().cuda() #之前是wls算出来的，不需要求梯度
+                'guess':_sample_batched['guess'][0].float().cuda()
             }
             #pad_mask = pad_mask.cuda()
             pred_correction= net(x_now=x.squeeze(1), h_prev=h_prev,meta=meta)
             h_prev = pred_correction 
             loss = loss_func(pred_correction, y)
             if config.writer:
-                writer.add_scalar("Loss/train", loss, count)
+                writer.add_scalar("Loss/train", loss.item(), count)
                 
             guess_prev=_sample_batched['guess']
+            delta_position_prev=_sample_batched['delta_position']
             count += 1    
             
             optimizer.zero_grad()   # clear gradients for next train
