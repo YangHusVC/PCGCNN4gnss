@@ -2,7 +2,7 @@ frac: 0.9
 batch_size: 1
 learning_rate: 3e-4
 N_test_batches: 1
-N_train_epochs: 2
+N_train_epochs: 10
 num_workers: 2
 pos_range_xy: 15
 pos_range_z: 15

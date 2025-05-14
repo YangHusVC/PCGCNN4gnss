@@ -178,7 +178,7 @@ def main(config: DictConfig) -> None:
     #无数据增强，debug用
     dataloader = DataLoader(train_set, batch_size=config.batch_size,
                             shuffle=False, num_workers=config.num_workers,collate_fn=collate_feat0)
-    val_loader = DataLoader(val_set, batch_size=1, 
+    val_loader = DataLoader(val_set, batch_size=config.batch_size,
                             shuffle=False, num_workers=0,collate_fn=collate_feat0)
     print('Initializing network: ', config.model_name)
     if config.model_name == "PCGCNN":
@@ -202,7 +202,7 @@ def main(config: DictConfig) -> None:
         writer = SummaryWriter(os.path.join(data_directory, 'runs', fname))
 
 
-    min_acc = 1000000
+    min_acc = 100
     
     for epoch in range(config.N_train_epochs):
         # TRAIN Phase

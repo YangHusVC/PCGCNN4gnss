@@ -14,6 +14,7 @@ from gnss_lib.utils import datetime_to_tow
 import gnss_lib.coordinates as coord
 from gnss_lib.solve_pos import solve_pos
 from gnss_lib.solve_vel import solve_vel
+from gnss_lib.sagnac import apply_earth_rotation_correction
 pd.options.mode.chained_assignment = None  # default='warn'
 
 class Android_GNSS_Dataset(Dataset):
@@ -159,9 +160,27 @@ class Android_GNSS_Dataset(Dataset):
         guess_NEDb[:3] = ref_local.ecef2ned(guess_XYZb[:3, None])[:, 0]   # position
 #         guess_NEDb[4:7] = ref_local.ecef2nedv(guess_XYZb[4:7, None])[:, 0]    # velocity
         '''
+        data = apply_earth_rotation_correction(data)
+
         #wls result as guessed
+        MAX_SAT=10
+        sorted_positions = data['Cn0DbHz'].values.argsort()[::-1]  
+        top_positions = sorted_positions[:MAX_SAT]
+       
         if guess_XYZb is None:
-            guess_XYZb=solve_pos(data.loc[:,'PrM'].to_numpy(),data.loc[:, "xSatPosM"].to_numpy(),data.loc[:, "ySatPosM"].to_numpy(),data.loc[:, "zSatPosM"].to_numpy(),np.zeros_like(data.loc[:, 'PrM'].to_numpy()))
+            '''guess_XYZb=solve_pos(data.loc[:,'PrM'][:MAX_SAT].to_numpy(),
+                                 data.loc[:, "xSatPosM"][:MAX_SAT].to_numpy(),
+                                 data.loc[:, "ySatPosM"][:MAX_SAT].to_numpy(),
+                                 data.loc[:, "zSatPosM"][:MAX_SAT].to_numpy(),
+                                 np.zeros_like(data.loc[:, 'PrM'][:MAX_SAT].to_numpy()))'''
+            guess_XYZb = solve_pos(
+            data.iloc[top_positions]['PrM'].to_numpy(),
+            data.iloc[top_positions]["xSatCorrected"].to_numpy(),
+            data.iloc[top_positions]["ySatCorrected"].to_numpy(),
+            data.iloc[top_positions]["zSatCorrected"].to_numpy(),
+            np.zeros_like(data.iloc[top_positions]['PrM'].to_numpy()),
+            cn0=data.iloc[top_positions]['Cn0DbHz'].to_numpy()
+        )
         #guess_XYZb = np.copy(true_XYZb)         # 0 noise for debugging 
         
         # Transform to NED frame
@@ -188,7 +207,11 @@ class Android_GNSS_Dataset(Dataset):
         los_vector = ref_local.ecef2nedv(los_vector)
 
         if guess_vXYZb is None:
-            guess_vXYZb=solve_vel(data['pseudorangeRateMetersPerSecond'],los_vector_cached,satXYZV['vx'],satXYZV['vy'],satXYZV['vz'])
+            guess_vXYZb=solve_vel(data['pseudorangeRateMetersPerSecond'],
+                                  los_vector_cached,
+                                  satXYZV['vx'],
+                                  satXYZV['vy'],
+                                  satXYZV['vz'])
         #guess_vXYZb = zeros_array = np.zeros_like(true_XYZb)        # 0 noise for debugging 
 
         '''guess_pXYZb=guess_XYZb+data_freq*guess_vXYZb#=f(guess_vXYZb)
@@ -392,9 +415,9 @@ def solve_gt_b(dframe, gt_slice, max_iter=20, tol=1e-3):
     return rb_new
 
 def expected_measurements(dframe, guess_XYZb):
-    satX = dframe.loc[:, "xSatPosM"].to_numpy()
-    satY = dframe.loc[:, "ySatPosM"].to_numpy()
-    satZ = dframe.loc[:, "zSatPosM"].to_numpy()
+    satX = dframe.loc[:, "xSatCorrected"].to_numpy()
+    satY = dframe.loc[:, "ySatCorrected"].to_numpy()
+    satZ = dframe.loc[:, "zSatCorrected"].to_numpy()
     satvX = dframe.loc[:, "xSatVelMps"].to_numpy()
     satvY = dframe.loc[:, "ySatVelMps"].to_numpy()
     satvZ = dframe.loc[:, "zSatVelMps"].to_numpy()
