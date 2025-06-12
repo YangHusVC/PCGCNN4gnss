@@ -1,9 +1,10 @@
 frac: 0.9
-batch_size: 1
-learning_rate: 3e-4
-N_test_batches: 1
-N_train_epochs: 10
+batch_size: 16
+learning_rate: 3e-6
+N_test_batches: 32
+N_train_epochs: 40
 num_workers: 2
+num_layers: 2
 pos_range_xy: 15
 pos_range_z: 15
 clk_range: 1e-5
@@ -24,3 +25,6 @@ detach_prev_state: True
 writer: True
 resume: 0
 prefix: debug # Prefix is a required variable to run the file
+network_inheritance: True
+teacher_forcing: 1 #0~1
+version: 2 #Temp

@@ -67,7 +67,7 @@ class LocalCoordGPU:
             [-torch.sin(lat)*torch.cos(lon), -torch.sin(lon), -torch.cos(lat)*torch.cos(lon)],
             [-torch.sin(lat)*torch.sin(lon),  torch.cos(lon), -torch.cos(lat)*torch.sin(lon)],
             [ torch.cos(lat),                 0,              -torch.sin(lat)]
-        ], dtype=torch.float32, device=init_ecef.device)
+        ], dtype=torch.float64, device=init_ecef.device)
         
         self.ecef2ned_matrix = self.ned2ecef_matrix.T
 

@@ -28,7 +28,7 @@ class Android_GNSS_Dataset(Dataset):
         
         #Config information for when files are opened and sampled by DataLoader
         self.max_open_files = config['max_open_files'] #cache size
-        self.guess_range = config['guess_range']
+        #self.guess_range = config['guess_range']
         self.history = config['history']
         self.rng = default_rng()
         if not config['bias_fname'] == 0:
@@ -225,15 +225,17 @@ class Android_GNSS_Dataset(Dataset):
         
         sample = {
             'features': torch.Tensor(features),
-            'true_correction': (true_NEDb-guess_NEDb)[:3],
-            'guess': torch.from_numpy(guess_XYZb),
-            'delta_position': torch.tensor(guess_dXYZb, dtype=torch.float32),
-            'sat_pos': torch.tensor(satXYZV[['x', 'y', 'z']].values, dtype=torch.float32),
-            'exp_pseudorange': torch.tensor(expected_pseudo, dtype=torch.float32),
+            'true_correction': torch.from_numpy((true_NEDb-guess_NEDb)[:3]),
+            'guess': torch.from_numpy(guess_XYZb).view(-1),
+            'delta_position': torch.tensor(guess_dXYZb).view(-1),
+            'sat_pos': torch.tensor(satXYZV[['x', 'y', 'z']].values),
+            'exp_pseudorange': torch.tensor(expected_pseudo),
             'sat_type': torch.tensor(data['constellationType'].values),
-            'PrM':torch.tensor(data['PrM'].values, dtype=torch.float32)
+            'PrM':torch.tensor(data['PrM'].values)
         }
 
+        assert sample['delta_position'].shape == (4,), "delta_position应为3维向量"
+        assert sample['guess'].shape == (4,), "guess应为4维向量"
 
         if self.transform is not None:
             sample = self.transform(sample)
@@ -443,5 +445,5 @@ def estimated_error(cn0,alpha=1):
     arr2=10**(-arr2/10)
 
     out=arr1*arr2'''
-    out=cn0.to_numpy()
+    out=10 ** (-cn0/20+2).to_numpy()
     return out

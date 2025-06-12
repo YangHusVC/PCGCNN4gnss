@@ -44,107 +44,116 @@ class PCGCNN(nn.Module):
         # 输出层
         self.output_linear = nn.Linear(hidden_channels, out_channels)
 
-    def build_graph(self, h_prev, x_now, meta):
+    def build_graph(self, h_prev, x_now, meta, pad_mask=None):
         """
-        构造图神经网络的输入图结构。
-    
+        重构后的构图函数（集中处理所有数据逻辑）
+        
         参数：
-        - h_prev: [3,] 上一时刻的预测位置（非节点状态），若为 None 则不构造预测位置
-        - x_now: [N, D] 当前观测特征（不包含 PPR）
-        - meta: 包含 sat_pos, delta_position, exp_pseudorange
-    
+        - h_prev: [B,3] 或 None
+        - x_now: [L_max, B, D] 原始输入特征
+        - meta: 包含批处理后的动态/静态字段
+        - pad_mask: [B, L_max] 填充掩码
+        
         返回：
-        - x_with_ppr: [N, D+1]，每个节点的新特征（前面追加 PPR）
-        - edge_index: [2, E]，图连接（全连接）
+        - x_with_ppr: [num_valid_nodes, D+1]
+        - edge_index: [2, E]
+        - batch: [num_valid_nodes] 图划分标识
         """
+        # 1. 处理原始输入维度
+        L_max, B, D = x_now.shape
+        device = x_now.device
         
-        #exp_pseudo = meta['exp_pseudorange']  # [N]
-        N = x_now.size(0)
+        # 2. 筛选有效节点
+        valid_mask = ~pad_mask.reshape(-1)  # [B*L_max]
+        valid_indices = torch.where(valid_mask)[0]
+        num_valid_nodes = len(valid_indices)
         
-
+        # 3. 处理特征（含PPR计算）
+        x_flat = x_now.permute(1,0,2).reshape(B*L_max, D)  # [B*L_max, D]
+        valid_x = x_flat[valid_mask]  # [num_valid_nodes, D]
+        
         if h_prev is not None:
-            guess_prev=meta['guess_prev']
-            delta_position=meta['delta_position'][0,:3].squeeze(0)
-            sat_pos = meta['sat_pos']        # [N, 3]
-            PrM=meta['PrM']
-            guess=meta['guess']
-
-            if self.detach_prev_state:
-                h_prev = h_prev.detach()
-            h_prev = h_prev.squeeze(0)
-            # 预测位置 = 上一时刻预测 + 本时刻 delta
-            ref_local = coord.LocalCoordGPU.from_ecef(guess_prev[0,:3])
-            ned_prev=ref_local.ecef2ned(guess_prev[0,:3])
-            pred_position = ref_local.ned2ecef(ned_prev+h_prev) + delta_position  # [3]
-            # 广播计算预测位置到每个卫星的距离
-            pred_position_expanded = pred_position.unsqueeze(0).unsqueeze(0)  # [1, 1, 3]
-            diff = sat_pos - pred_position_expanded          # 广播后 [1, 32, 3]
-            dists = torch.norm(diff, dim=2)+guess[-1]               # 输出 [1, 32]
-            ppr = PrM - dists#exp_pseudo                        # 形状 [1, 32]
-            ppr=ppr.squeeze(0)
+            # PPR计算（批量处理）
+            pred_positions = []
+            for b in range(B):
+                ref_local = coord.LocalCoordGPU.from_ecef(meta['guess_prev'][b,:3])
+                ned_prev = ref_local.ecef2ned(meta['guess_prev'][b,:3])
+                pred_pos = ref_local.ned2ecef(ned_prev + h_prev[b]) + meta['delta_position'][b,:3]
+                pred_positions.append(pred_pos)
+            pred_position = torch.stack(pred_positions)  # [B,3]
+            
+            # 计算距离（仅对有效节点）
+            sat_pos_valid = meta['sat_pos'].reshape(B*L_max, 3)[valid_mask]  # [num_valid,3]
+            pred_expanded = pred_position.repeat_interleave(L_max, dim=0)[valid_mask]  # [num_valid,3]
+            dists = torch.norm(sat_pos_valid - pred_expanded, dim=1) + meta['guess'][:,-1].repeat_interleave(L_max)[valid_mask]
+            ppr = meta['PrM'].reshape(B*L_max)[valid_mask] - dists  # [num_valid]
         else:
-        # 没有预测位置，用原始特征里的伪距残差（第一列）作为 PPR
-            ppr = x_now[:, 0] # [1,N]
-
-    # 拼接 PPR 到特征前
-        x_with_ppr = torch.cat([ppr.unsqueeze(1) , x_now], dim=1)  # [N, D+1]
-
-        sat_type=meta['sat_type'][0]
+            ppr = valid_x[:, 0]  # 使用第一列作为PPR
         
-        N = x_with_ppr.size(0)
-        device = x_with_ppr.device
-        row_list = []
-        col_list = []
+        # 4. 构建最终特征
+        x_with_ppr = torch.cat([ppr.unsqueeze(1), valid_x], dim=1)  # [num_valid, D+1]
+        
+        # 5. 构图（多图处理）
+        batch = torch.repeat_interleave(
+            torch.arange(B, device=device),
+            (~pad_mask).sum(dim=1)  # 精确计算每个样本的有效节点数
+        )
+        
+        edge_indices = []
+        sat_type_valid = meta['sat_type'].reshape(B*L_max)[valid_mask]  # [num_valid]
+        
+        for b in range(B):
+            sample_mask = (batch == b)
+            current_nodes = torch.where(sample_mask)[0]
+            if len(current_nodes) == 0:
+                continue
+                
+            # 当前样本的特征和类型
+            feat = x_with_ppr[sample_mask]
+            types = sat_type_valid[sample_mask]
+            
+            # 计算相似度
+            feat_norm = F.normalize(feat[:,:4], dim=1)
+            cos_sim = torch.mm(feat_norm, feat_norm.t())
+            
+            # 构建边
+            type_mask = (types.unsqueeze(1) == types.unsqueeze(0)).to(device)
+            connect_mask = (cos_sim > self.similarity_threshold) | type_mask
+            rows, cols = torch.where(torch.triu(connect_mask, diagonal=1))
+            
+            # 转换为全局索引并添加双向边
+            global_idx = current_nodes[torch.stack([rows, cols])]
+            edge_indices.append(global_idx)
+            edge_indices.append(global_idx.flip(0))
+        
+        edge_index = torch.cat(edge_indices, dim=1) if edge_indices else torch.empty(2,0, device=device)
+        
+        return x_with_ppr, edge_index, batch
 
-        # 你可以挑选部分维度作为计算余弦相似度的 basis
-        # 这里我们假设 [0:4] 是你想用于相似度计算的子向量（可以改）
-        feat_for_sim = x_with_ppr[:, :4]  # [N, 4]
-        feat_norm = F.normalize(feat_for_sim, dim=1)  # L2 normalize
-
-        cos_sim = torch.matmul(feat_norm, feat_norm.t())  # [N, N]
-        sim_thresh = self.similarity_threshold  # 例如：0.9
-
-        for i in range(N):
-            for j in range(N):
-                if i == j:
-                    continue
-                same_constellation = sat_type[i] == sat_type[j]
-                high_similarity = cos_sim[i, j] > sim_thresh
-                if same_constellation or high_similarity:
-                    row_list.append(i)
-                    col_list.append(j)
-
-        edge_index = torch.tensor([row_list, col_list], dtype=torch.long, device=device)
-
-        return x_with_ppr, edge_index
-
-    def forward(self, h_prev, x_now, meta):
+    def forward(self, h_prev, x_now, meta, pad_mask=None):
         """
-        h_prev: [N, H] 或 None
-        x_now: [N, D]
-        return: h_now: [N, H], output: [N, 3]
+        简化后的前向传播
         """
-
-        # 构图 & 融合
-        h_combined, edge_index = self.build_graph(h_prev, x_now, meta)
-
-        # 逐层 GNN
-        h = h_combined
-        h=F.relu(self.input_gnn(h,edge_index))
+        # 所有数据处理移至build_graph
+        x_with_ppr, edge_index, batch = self.build_graph(
+            h_prev, 
+            x_now, 
+            meta,
+            pad_mask
+        )
+        
+        # GNN处理
+        h = x_with_ppr
+        h = F.relu(self.input_gnn(h, edge_index))
         h = self.bn(h)
-
+        
         for conv in self.gnn_layers:
             h = F.relu(conv(h, edge_index))
             h = self.bn(h)
-
-        # batch 是标识节点属于哪个图的索引张量（形状 [N,]）
-        N = h.shape[0]
-        batch = torch.zeros(N, dtype=torch.long, device=h_combined.device) 
-        # 例如：batch = torch.tensor([0,0,0,1,1,1,1]) 表示前3节点属于图0，后4节点属于图1
-        h_pooled = self.pool(h,batch)  # 输出形状 [num_graphs, hidden_channels]
-        # 输出结果
-        out = self.output_linear(h_pooled)
-        return out
+        
+        # 池化（使用build_graph返回的精确batch划分）
+        h_pooled = self.pool(h, batch)
+        return self.output_linear(h_pooled)
 
 
 ########################################################

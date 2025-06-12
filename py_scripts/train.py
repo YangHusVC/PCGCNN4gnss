@@ -16,6 +16,7 @@ import numpy as np # linear algebra
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import random
 
 from android_dataset import Android_GNSS_Dataset
 from networks import PCGCNN, Net_Snapshot, DeepSetModel
@@ -42,23 +43,39 @@ class RandomTailDataset(torch.utils.data.Dataset):
         return self.base_dataset[self.indices[idx]]
 
 def collate_feat(batch):
-    #不用于GNN
+    # 按序列长度降序排序
     sorted_batch = sorted(batch, key=lambda x: x['features'].shape[0], reverse=True)
-    features = [x['features'] for x in sorted_batch]
-    features_padded = torch.nn.utils.rnn.pad_sequence(features)
-    L, N, dim = features_padded.size()
-    pad_mask = np.zeros((N, L))
-    for i, x in enumerate(features):
-        pad_mask[i, len(x):] = 1
-    pad_mask = torch.Tensor(pad_mask).bool()
-    correction = torch.Tensor([x['true_correction'] for x in sorted_batch])
-    guess = torch.Tensor([x['guess'] for x in sorted_batch])
-    retval = {
-            'features': features_padded,
-            'true_correction': correction,
-            'guess': guess
-        }
-    return retval, pad_mask  
+    
+    # 处理变长字段（共享同一L_max）
+    dynamic_keys = ['features', 'sat_pos', 'exp_pseudorange', 'sat_type', 'PrM']
+    padded = {
+        k: torch.nn.utils.rnn.pad_sequence([x[k] for x in sorted_batch], batch_first=False) 
+        for k in dynamic_keys
+    }
+    
+    # 生成pad_mask（基于features长度）
+    lengths = [x['features'].shape[0] for x in sorted_batch]
+    L_max = max(lengths)
+    N = len(sorted_batch)
+    pad_mask = torch.zeros(N, L_max, dtype=torch.bool)
+    for i, l in enumerate(lengths):
+        pad_mask[i, l:] = True
+
+    # 固定维度字段
+    static_fields = {}
+    for k in ['true_correction', 'guess', 'delta_position']:
+        # 将每个样本的字段转为1D张量
+        tensors = [x[k].reshape(-1) for x in sorted_batch]  # 自动处理标量/向量
+        
+        # 检查维度一致性
+        dim = tensors[0].shape[0]
+        for t in tensors[1:]:
+            assert t.shape[0] == dim, f"字段 {k} 维度不一致：{t.shape} vs {dim}"
+            
+        static_fields[k] = torch.stack(tensors)  # 形状 [N, dim]
+
+    
+    return {**padded, **static_fields}, pad_mask
 
 def collate_feat0(batch):
     # 按 features 序列长度从大到小排序
@@ -102,8 +119,8 @@ def test_eval(val_loader, net, loss_func):
     net.eval()
 
     h_prev = None
-    guess_prev = torch.zeros(3) #WWWWWWWWWWWWWWWWWWWW
-    delta_position_prev=torch.zeros(3)
+    guess_prev = torch.zeros(4) #WWWWWWWWWWWWWWWWWWWW
+    delta_position_prev=torch.zeros(4)
 
     with torch.no_grad():
         for sample_batched, pad_mask in tqdm(val_loader, desc='test', leave=False):
@@ -119,18 +136,20 @@ def test_eval(val_loader, net, loss_func):
                 guess_prev = _sample_batched['guess'].float().cuda()
 
             meta={
-                'delta_position': delta_position_prev.float().cuda(),
-                'sat_pos':_sample_batched['sat_pos'].float().cuda(),
+                'delta_position': delta_position_prev.double().cuda(),
+                'sat_pos':_sample_batched['sat_pos'].double().cuda(),
                 #'exp_pseudorange':_sample_batched['exp_pseudorange'].float().cuda(),
-                'PrM':_sample_batched['PrM'].float().cuda(),
+                'PrM':_sample_batched['PrM'].double().cuda(),
                 'sat_type':_sample_batched['sat_type'].long(),
-                'guess_prev':guess_prev.float().cuda(),#torch.tensor(guess_prev).clone().detach().float().cuda() #之前是wls算出来的，不需要求梯度
-                'guess':_sample_batched['guess'][0].float().cuda()
+                'guess_prev':guess_prev.double().cuda(),#torch.tensor(guess_prev).clone().detach().float().cuda() #之前是wls算出来的，不需要求梯度
+                'guess':_sample_batched['guess'][0].double().cuda()
             }
 
             # 前向推理
-            pred_correction= net(x_now=x.squeeze(1), h_prev=h_prev,meta=meta)
-            h_prev = pred_correction 
+            pred_correction= net(x_now=x.squeeze(1), h_prev=h_prev,meta=meta,pad_mask=pad_mask)
+
+            #h_prev = pred_correction 
+            h_prev=None #debug
 
             # 更新 guess_prev 为当前的 guess（你在 dataloader 提供）
             guess_prev=_sample_batched['guess']
@@ -139,9 +158,10 @@ def test_eval(val_loader, net, loss_func):
             loss = loss_func(pred_correction, y)
             total_loss += loss.item()
 
-            stats_val.append((y - pred_correction).cpu().numpy())
+            batch_mean_error = np.mean(np.abs((y - pred_correction).cpu().numpy()), axis=0)
+            stats_val.append(batch_mean_error)
 
-    avg_abs_error = np.mean(np.abs(np.array(stats_val)), axis=0)#np.mean(np.abs(np.concatenate(stats_val, axis=0)), axis=0)
+    avg_abs_error = np.mean(np.array(stats_val), axis=0)#np.mean(np.abs(np.concatenate(stats_val, axis=0)), axis=0)
     avg_loss = total_loss / len(stats_val)
 
     return avg_abs_error, avg_loss
@@ -177,12 +197,25 @@ def main(config: DictConfig) -> None:
     
     #无数据增强，debug用
     dataloader = DataLoader(train_set, batch_size=config.batch_size,
-                            shuffle=False, num_workers=config.num_workers,collate_fn=collate_feat0)
+                            shuffle=True, num_workers=config.num_workers,collate_fn=collate_feat)
     val_loader = DataLoader(val_set, batch_size=config.batch_size,
-                            shuffle=False, num_workers=0,collate_fn=collate_feat0)
+                            shuffle=False, num_workers=0,collate_fn=collate_feat)
     print('Initializing network: ', config.model_name)
     if config.model_name == "PCGCNN":
-        net = PCGCNN(in_channels=6, hidden_channels=64, out_channels=3, detach_prev_state=config.detach_prev_state,similarity_threshold=config.similarity_threshold)
+        net = PCGCNN(in_channels=6, hidden_channels=128, out_channels=3, num_layers=config.num_layers,detach_prev_state=config.detach_prev_state,similarity_threshold=config.similarity_threshold)
+        if config.network_inheritance:
+            # 检查是否有指定的权重文件
+            weight_path = os.path.join(
+                data_directory, 
+                'weights', 
+                f"android_{config.prefix}temp{config.version}.pth"  # 如 android_myprefixtemp1.pth
+            )
+            
+            if os.path.exists(weight_path):
+                print(f"Loading weights from: {weight_path}")
+                net.load_state_dict(torch.load(weight_path))
+            else:
+                print(f"Weight file not found: {weight_path}. Starting fresh training.")
     elif config.model_name=='Set Transformer':
         net = Net_Snapshot(train_set[0]['features'].size()[1], 1, len(train_set[0]['true_correction']))     # define the network
     else:
@@ -195,7 +228,7 @@ def main(config: DictConfig) -> None:
     net.cuda()
 
     optimizer = torch.optim.Adam(net.parameters(), config.learning_rate)
-    loss_func = torch.nn.MSELoss()
+    loss_func = torch.nn.HuberLoss(delta=5)#torch.nn.MSELoss()
     count = 0
     fname = "android_" + config.prefix + "_"+ datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if config.writer:
@@ -217,8 +250,8 @@ def main(config: DictConfig) -> None:
                             shuffle=False, num_workers=0)'''
         net.train()
         h_prev = None
-        guess_prev=torch.zeros(3)
-        delta_position_prev=torch.zeros(3)
+        guess_prev=torch.zeros(4)
+        delta_position_prev=torch.zeros(4)
         for i, sample_batched in enumerate(dataloader):
             _sample_batched, pad_mask = sample_batched
             
@@ -227,17 +260,31 @@ def main(config: DictConfig) -> None:
             
 
             meta={
-                'delta_position': delta_position_prev.float().cuda(),
-                'sat_pos':_sample_batched['sat_pos'].float().cuda(),
+                'delta_position': delta_position_prev.double().cuda(),
+                'sat_pos':_sample_batched['sat_pos'].double().cuda(),
                 #'exp_pseudorange':_sample_batched['exp_pseudorange'].float().cuda(),
-                'PrM':_sample_batched['PrM'].float().cuda(),
+                'PrM':_sample_batched['PrM'].double().cuda(),
                 'sat_type':_sample_batched['sat_type'].long(),
-                'guess_prev':guess_prev.float().cuda(),#torch.tensor(guess_prev).clone().detach().float().cuda() #之前是wls算出来的，不需要求梯度
-                'guess':_sample_batched['guess'][0].float().cuda()
+                'guess_prev':guess_prev.double().cuda(),#torch.tensor(guess_prev).clone().detach().float().cuda() #之前是wls算出来的，不需要求梯度
+                'guess':_sample_batched['guess'][0].double().cuda()
             }
-            #pad_mask = pad_mask.cuda()
-            pred_correction= net(x_now=x.squeeze(1), h_prev=h_prev,meta=meta)
-            h_prev = pred_correction 
+            pad_mask = pad_mask.cuda()
+            pred_correction= net(x_now=x.squeeze(1), h_prev=h_prev,meta=meta,pad_mask=pad_mask)
+
+
+            #current_tf = max(0.0, 1.0 - epoch / config.N_train_epochs) 
+            '''if config.teacher_forcing<=0:
+                h_prev = pred_correction
+            elif config.teacher_forcing>=1:
+                h_prev = y
+            else:
+                if random.random() < config.teacher_forcing:
+                    h_prev = y
+                else:
+                    h_prev = pred_correction'''
+            h_prev=None #debug
+
+
             loss = loss_func(pred_correction, y)
             if config.writer:
                 writer.add_scalar("Loss/train", loss.item(), count)
@@ -254,12 +301,18 @@ def main(config: DictConfig) -> None:
         mean_acc, test_loss = test_eval(val_loader, net, loss_func)
         if config.writer:
             writer.add_scalar("Loss/test", test_loss, epoch)
-        for j in range(len(mean_acc[0])):
+        for j in range(len(mean_acc)):
             if config.writer:
-                writer.add_scalar("Metrics/Acc_"+str(j), mean_acc[0, j], epoch)
+                writer.add_scalar("Metrics/Acc_"+str(j), mean_acc[j], epoch)
         if np.sum(mean_acc) < min_acc:
             min_acc = np.sum(mean_acc)
-            torch.save(net.state_dict(), os.path.join(data_directory, 'weights', fname))
+            if config.network_inheritance:
+                # 继承训练时，保存为 temp+编号 格式（如 android_myprefixtemp2.pth）
+                fname = f"android_{config.prefix}temp{config.version+1}.pth"
+                torch.save(net.state_dict(), os.path.join(data_directory, 'weights', fname))
+            else:
+                fname = f"android_{config.prefix}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pth"
+                torch.save(net.state_dict(), os.path.join(data_directory, 'weights', fname))
         print('Training done for ', epoch)
 
 if __name__=="__main__":

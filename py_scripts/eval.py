@@ -38,8 +38,8 @@ version = 1
 
 config = {
     "root": os.path.join(data_directory),
-    "raw_data_dir" : "val",
-    "data_dir": "android_val_processed",
+    "raw_data_dir" : "train",
+    "data_dir": "android_train_processed",
     "history": 1,
     "seed": 1,
     "chunk_size": 100,
@@ -56,7 +56,7 @@ net.load_state_dict(torch.load(os.path.join(data_directory, 'weights', weight_di
 net.cuda()'''
 
 gnet=PCGCNN(in_channels=9, hidden_channels=128, out_channels=3, similarity_threshold=0.9)
-gnet.load_state_dict(torch.load(os.path.join(data_directory, version_dict[str(version)])))
+#gnet.load_state_dict(torch.load(os.path.join(data_directory, version_dict[str(version)])))
 gnet.cuda()
 
 # Create empty dicts and lists
@@ -107,34 +107,34 @@ for b_t_sel in range(len(val_idx_list)-1):
         _ecef0 = _data['guess']
         ref_local = coord.LocalCoord.from_ecef(_ecef0[:3])
         x = _data['features'].float().cuda()
-        meta={
+        '''meta={
                 'delta_position': _data['delta_position'].float().cuda(),
                 'sat_pos':_data['sat_pos'].float().cuda(),
                 'exp_pseudorange':_data['exp_pseudorange'].float().cuda(),
                 'sat_type':_data['sat_type'].long(),
                 'guess_prev':torch.Tensor(guess_prev).float.cuda()
-            }
+            }'''
         y = _data['true_correction']
-        _y, h_prev= gnet(x.unsqueeze(1),h_prev=h_prev,meta=meta).cpu().detach().numpy()
+        #_y, h_prev= gnet(x.unsqueeze(1),h_prev=h_prev,meta=meta).cpu().detach().numpy()
         '''_ecef_net_rand = ref_local.ned2ecef(_y[0, :])[:, 0]'''
         '''ls_rand_net[times[t_idx]] = _ecef_net_rand'''
-        ls_gt_corr[times[t_idx]] = ref_local.ned2ecef(y)[:, 0]
-        y_ls.append(y)
-        y_hat_ls.append(_y)
+        #ls_gt_corr[times[t_idx]] = ref_local.ned2ecef(y)[:, 0]
+        y_ls.append(y.numpy())
+        #y_hat_ls.append(_y)
 
     #     WLS1
-        ls_wls1[times[t_idx]] = _ecef0[:3]
+        '''ls_wls1[times[t_idx]] = _ecef0[:3]
         y_wls_ls.append(ref_local.ecef2ned(_ecef0[:3, None])[:, 0])
 
-        ls_gt[times[t_idx]] = true_XYZb[:3]
+        ls_gt[times[t_idx]] = true_XYZb[:3]'''
 
 
         b_t_idx += 1
 
-y_diff = (np.array(y_ls) - np.squeeze(np.array(y_hat_ls), axis=1))
+#y_diff = (np.array(y_ls) - np.squeeze(np.array(y_hat_ls), axis=1))
 #y_og = np.array(y_ls)
 y_wls = np.array(y_ls) #- np.array(y_wls_ls)
 
 '''print("Mean positioning error along NED in initial positions (m): ", np.mean(np.abs(y_og), axis=0))'''
-print("Mean positioning error along NED in DNN corrected positions (m): ", np.mean(np.abs(y_diff), axis=0))
-print("Mean positioning error along NED in WLS positions (m): ", np.nanmean(np.abs(y_wls), axis=0))
+#print("Mean positioning error along NED in DNN corrected positions (m): ", np.mean(np.abs(y_diff), axis=0))
+print("Mean positioning error along NED in WLS positions (m): ", np.nanmean(y_wls, axis=0))
